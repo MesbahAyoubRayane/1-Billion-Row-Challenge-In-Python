@@ -1,13 +1,14 @@
 import multiprocessing as mlp
-from multiprocessing.pool import MapResult
 import itertools as iters
 import functools as fnct
 from dataclasses import dataclass
+from multiprocessing.pool import MapResult
 from typing import Optional
 import pprint
 import numpy as np
+from numpy.typing import NDArray
 import time
-
+from pathlib import Path
 
 @dataclass
 class Status:
@@ -15,53 +16,85 @@ class Status:
     _max : float
     _sum : float
     _count :int
+    @property
+    def min(self):
+        return self._min
+    @property
+    def max(self):
+        return self._max
+    @property
+    def sum(self):
+        return self._sum
+    @property
+    def count(self):
+        return self._count
 
 
-INPUT_PATH = "/home/mar/Desktop/1brc-python/measurements.txt"
-OUTPUT_PATH = "output.txt"
-BATCH_SIZE = 100000
-CPUS = 4
-MAX_JOBS = 100
-TIMEOUT = 0.5
-MAX_CACHE_SIZE = 1000
+INPUT_PATH = ""
+OUTPUT_PATH = ""
+BATCH_SIZE = 100000 # number of lines to read simultaneously
+CPUS = 4 # specify the number of the cpu cores to use
+MAX_JOBS = 100 # the max number of jobs which can be queued
+TIMEOUT = 0.5  # the time for the main thread to wait until the number of jobs in the queue < MAX_JOBS
 
-@fnct.lru_cache(maxsize=MAX_CACHE_SIZE)
+INPUT_PATH = INPUT_PATH.strip()
+OUTPUT_PATH = OUTPUT_PATH.strip()
+BATCH_SIZE = int(BATCH_SIZE)
+CPUS = int(CPUS)
+MAX_JOBS = int(MAX_JOBS)
+TIMEOUT = float(TIMEOUT)
+
+assert INPUT_PATH != OUTPUT_PATH
+assert INPUT_PATH != "" and OUTPUT_PATH != ""
+assert Path(INPUT_PATH).exists()
+assert BATCH_SIZE > 1
+assert CPUS > 0
+assert MAX_JOBS > 0
+assert TIMEOUT > 0
+
 def parse(line:str) -> Optional[tuple[str,float]]:
+    """
+    :param line: a single line of the form <city name>;<temperature as a float>\n
+    :return: if the line can't be parsed it return None, if the line is parseable it returns the city name, temperature
+    """
     line=line.strip()
     try:
         city,temp,*_ = line.split(";")
         city,temp = city.strip(),float(temp.strip())
         return city,temp
     except ValueError:...
-    return None
     
 def consume(batch:tuple[str,...]) -> dict[str,Status]:
-    parsed_lines = (parse(x) for x in batch)
-    parsed_lines = (x for x in parsed_lines if x is not None)
+    """
+    :param batch: a tuple of <BATCH_SIZE> string, each one represent a line of the form <city name>;<temperature as a float>\n
+    :return: a dictionary that accumulate the temperatures of the same city
+    """
+    parsed_lines = (x for x in (parse(x) for x in batch) if x is not None)
     grouped_lines = iters.groupby(sorted(parsed_lines,key=lambda x:x[0]),key=lambda x:x[0])
     acc:dict[str,Status]= {}
     for city,temps in grouped_lines:
-        temps = np.array([temp for _,temp in temps])
+        temps: NDArray[float] = np.array(list(temps))
         _min,_max,_sum,_count = min(temps),max(temps),sum(temps),len(temps)
         if city not in acc:
             acc[city] = Status(_min,_max,_sum,_count)
         else:
             old = acc[city]
-            old._min = min(old._min,_min)
-            old._max = max(old._max,_max)
-            old._sum += _sum
-            old._count += _count
+            acc[city] = Status(min(old.min, _min), max(old.max, _max), old.sum + _sum, old.count + _count)
     return acc
 
 def accumulate(x:dict[str,Status],y:dict[str,Status]) -> dict[str,Status]:
+    """
+    :param x: A number of measurements, where the key is the city name
+    :param y: A number of measurements, where the key is the city name
+    :return:  a dictionary that combine x and y
+    """
     for city,temps in y.items():
         if city not in x:
             x[city] = temps
-        else:
-            x[city]._min = min(x[city]._min,temps._min)
-            x[city]._max = max(x[city]._max,temps._max)
-            x[city]._sum += temps._sum
-            x[city]._count += temps._count
+            continue
+        x[city] = Status(
+            min(x[city].min, temps.min),max(x[city].max,temps.max),
+            x[city].sum + temps.sum, x[city].count + temps.count)
     return x 
 
 def main():
@@ -79,4 +112,5 @@ def main():
     with open(OUTPUT_PATH,"wt") as f:
         f.write(pprint.pformat(acc))
 
-main()
+if __name__ == "__main__":
+    main()
